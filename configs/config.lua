@@ -4,7 +4,7 @@ Config.DevMode = false
 
 Config.Align = "top-left"                      -- menu alignment
 
-Config.Lang = "English"                        -- language you want to use please make sure its in the translation.lua
+Config.Lang = "Spanish"                        -- language you want to use please make sure its in the translation.lua
 
 Config.Dragcommand = "Drag"                    -- Comand to drag players
 
