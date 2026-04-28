@@ -9,6 +9,7 @@ This is a comprehensive police system for RedM using the VORP framework. It inte
 1. Download or clone the repository to your server's resources folder.
 2. Add `ensure vorp_police` to your `server.cfg` file to ensure the script is loaded when the server starts.
 3. Make sure the required dependencies are installed and properly configured.
+4. This script registers automatically jobs to vorp core.
 
 ## **Features**
 
@@ -17,7 +18,7 @@ This is a comprehensive police system for RedM using the VORP framework. It inte
 - Configurable item limits, allowing for a flexible inventory management system within the police force.
 
 ### **On-Duty System**
-- Utilize **statebags** to track whether players are on or off duty.
+- Utilize **statebags** to track whether players are on or off duty for light checks.
 
 ### **Teleport System**
 - Set up teleport points for **fast travel** between different police stations or key locations.
@@ -50,7 +51,7 @@ This script requires the following VORP resources to function properly:
 - **[VORP Core](https://github.com/VORPCORE/vorp_core-lua)**: Provides essential functions and event handlers used throughout the script.
 - **[VORP Inventory](https://github.com/VORPCORE/vorp_inventory-lua)**: Manages the item-based inventory system, including cuffs and keys.
 - **[VORP Menu](https://github.com/VORPCore/vorp_menu)**: Powers the interactive menu system, used for the boss menu, hire/fire system, and teleportation points.
-- **[PolyZone](https://github.com/outsider31000/PolyZone)**: download polyzone
+- **[VORP Lib](https://github.com/VORPCORE/vorp_lib)**: Supplies shared utilities, including the PolyZones module now used for jail boundaries.
 
 Ensure you have these resources installed and correctly set up for the `vorp_police` script to work seamlessly.
 
@@ -95,3 +96,11 @@ You can configure the script to suit your server's needs. The following settings
 ## **Support and Updates**
 
 For support or further information, please ask in the [Vorp Core Discord](https://discord.gg/JjNYMnDKMf). Updates will be released periodically to improve functionality or compatibility with the latest VORP framework versions.
+
+
+## **Exports**
+
+```lua
+local isOnDuty = exports.vorp_police:isOnDuty(source)
+local policeId = exports.vorp_police:getPoliceFromCall(source) -- returns id source if on call or 0
+```

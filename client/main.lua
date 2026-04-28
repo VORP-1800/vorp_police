@@ -1,35 +1,37 @@
-local Core <const>     = exports.vorp_core:GetCore()
-local MenuData <const> = exports.vorp_menu:GetMenuData()
-local T <const>        = Translation.Langs[Config.Lang]
-local draggedBy        = -1
-local drag             = false
-local wasDragged       = false
-local blip             = 0
-local Poly             = nil
-local playerInJail     = false
-local group <const>    = GetRandomIntInRange(0, 0xFFFFFF)
-local prompt           = 0
+local LIB                 = Import({ "/configs/config", "/languages/translation", "blips", "prompts", "polyzones" })
+local PolyZones <const>   = LIB.PolyZones --[[@as PolyZones]]
+local Config <const>      = LIB.Config --[[@as vorp_police_config]]
+local Translation <const> = LIB.Translation --[[@as vorp_police_translation]]
+local Blips <const>       = LIB.Blips --[[@as MAP]]
+local Prompts <const>     = LIB.Prompts --[[@as PROMPTS]]
+
+local Core <const>        = exports.vorp_core:GetCore()
+local MenuData <const>    = exports.vorp_menu:GetMenuData()
+local T <const>           = Translation.Langs[Config.Lang]
+local draggedBy           = -1
+local drag                = false
+local wasDragged          = false
+local blip                = 0
+local Poly                = nil
+local playerInJail        = false
+local prompts <const>     = {}
 
 -- on resource stop
 AddEventHandler("onResourceStop", function(resource)
     if resource ~= GetCurrentResourceName() then return end
     if drag then
-        drag = false
         DetachEntity(PlayerPedId(), true, false)
-    end
-    -- remove blips
-    for key, value in pairs(Config.Stations) do
-        RemoveBlip(value.BlipHandle)
     end
 
     if Poly then
-        Poly:destroy()
+        PolyZones:Destroy(Poly)
+        Poly = nil
     end
 end)
 
 local function getClosestPlayer()
     local players <const> = GetActivePlayers()
-    local coords <const> = GetEntityCoords(PlayerPedId())
+    local coords <const> = GetEntityCoords(CACHE.Ped)
 
     for _, value in ipairs(players) do
         if PlayerId() ~= value then
@@ -44,19 +46,8 @@ local function getClosestPlayer()
     return false, nil
 end
 
-local function registerPrompts()
-    if prompt ~= 0 then UiPromptDelete(prompt) end
-    prompt = UiPromptRegisterBegin()
-    UiPromptSetControlAction(prompt, Config.Keys.B)
-    local label = VarString(10, "LITERAL_STRING", T.Menu.Press)
-    UiPromptSetText(prompt, label)
-    UiPromptSetGroup(prompt, group, 0)
-    UiPromptSetStandardMode(prompt, true)
-    UiPromptRegisterEnd(prompt)
-end
-
 local function applyBadge(result)
-    local playerPed <const> = PlayerPedId()
+    local playerPed <const> = CACHE.Ped
     if result then
         RemoveTagFromMetaPed(playerPed, 0x3F7F3587, 0)
         UpdatePedVariation(playerPed, false, true, true, true, false)
@@ -86,83 +77,84 @@ local function isOnDuty()
 end
 
 local function createBlips()
-    for key, value in pairs(Config.Stations) do
-        local blipHandle <const> = BlipAddForCoords(Config.Blips.Style, value.Coords.x, value.Coords.y, value.Coords.z)
-        SetBlipSprite(blipHandle, joaat(Config.Blips.Sprite), false)
-        BlipAddModifier(blipHandle, Config.Blips.Color)
-        SetBlipName(blipHandle, value.Name)
-        value.BlipHandle = blipHandle
+    for _, value in pairs(Config.Stations) do
+        Blips:Create('coords', {
+            Pos = value.Coords,
+            Blip = Config.Blips.Style,
+            Options = {                       -- optional
+                sprite = Config.Blips.Sprite, --string or integer if type is entity or coords
+                name = value.Name,
+                modifier = Config.Blips.Color,
+            },
+        })
     end
 end
 
-local isHandleRunning = false
-local function Handle()
-    registerPrompts()
-    isHandleRunning = true
-    while true do
-        local sleep = 1000
-        for key, value in pairs(Config.Stations) do
-            local coords <const> = GetEntityCoords(PlayerPedId())
 
-            if value.Storage[key] then
-                local distanceStorage <const> = #(coords - value.Storage[key].Coords)
-                if distanceStorage < 2.0 then
-                    sleep = 0
-                    if distanceStorage < 1.5 then
-                        local label <const> = VarString(10, "LITERAL_STRING", value.Name)
-                        UiPromptSetActiveGroupThisFrame(group, label, 0, 0, 0, 0)
+local function registerLocations()
+    for key, value in pairs(Config.Stations) do
+        local locations = {
+            { coords = value.Coords,                label = value.Name,                distance = 2.0, },
+            { coords = value.Storage[key].Coords,   label = value.Storage[key].Name,   distance = 1.5, },
+            { coords = value.Teleports[key].Coords, label = value.Teleports[key].Name, distance = 2.0, },
+        }
 
-                        if UiPromptHasStandardModeCompleted(prompt, 0) then
-                            if isOnDuty() then
-                                local isAnyPlayerClose <const> = getClosestPlayer()
-                                if not isAnyPlayerClose then
-                                    TriggerServerEvent("vorp_police:Server:OpenStorage", key)
-                                else
-                                    Core.NotifyObjective(T.Error.Playernearby, 5000)
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-
-            if value.Teleports[key] then
-                local distanceTeleport <const> = #(coords - value.Teleports[key].Coords)
-                if distanceTeleport < 2.0 then
-                    sleep = 0
-                    if distanceTeleport < 1.5 then
-                        local label <const> = VarString(10, "LITERAL_STRING", value.Name)
-                        UiPromptSetActiveGroupThisFrame(group, label, 0, 0, 0, 0)
-
-                        if UiPromptHasStandardModeCompleted(prompt, 0) then
-                            if isOnDuty() then
-                                OpenTeleportMenu(key)
-                            end
-                        end
-                    end
-                end
-            end
-
-            local distanceStation <const> = #(coords - value.Coords)
-            if distanceStation < 2.0 then
-                sleep = 0
-
-                local label <const> = VarString(10, "LITERAL_STRING", value.Name)
-                UiPromptSetActiveGroupThisFrame(group, label, 0, 0, 0, 0)
-
-                if UiPromptHasStandardModeCompleted(prompt, 0) then
-                    local job <const> = LocalPlayer.state.Character.Job
-                    if Config.SheriffJobs[job] then
-                        OpenSheriffMenu()
-                    else
-                        Core.NotifyObjective(T.Error.OnlyPoliceopenmenu, 5000)
-                    end
-                end
-            end
+        if not Config.UseTeleportsMenu then
+            table.remove(locations, 3)
         end
 
-        if not isHandleRunning then return end
-        Wait(sleep)
+        local data = {
+            sleep = 800,
+            locations = locations,
+            prompts = {
+                {
+                    type = 'Press',
+                    key = Config.Keys.B,
+                    label = T.Menu.Press,
+                    mode = 'Standard',
+                },
+            }
+        }
+        local prompt <const> = Prompts:Register(data, function(self, index, data)
+            if index == 2 then
+                if isOnDuty() then
+                    local isAnyPlayerClose <const> = getClosestPlayer()
+                    if not isAnyPlayerClose then
+                        TriggerServerEvent("vorp_police:Server:OpenStorage", key)
+                    else
+                        Core.NotifyObjective(T.Error.PlayerNearbyCantOpenInventory, 5000)
+                    end
+                end
+            end
+
+            if index == 3 then
+                if not Config.UseTeleportsMenu then
+                    return
+                end
+                if isOnDuty() then
+                    OpenTeleportMenu(key, true)
+                end
+            end
+
+            if index == 1 then
+                -- light check if player can open the sheriff menu
+                local job <const> = LocalPlayer.state.Character.Job
+                local grade <const> = LocalPlayer.state.Character.Grade
+                local v <const> = Config.PoliceJobs[job]
+                if v then
+                    local value2 <const> = v[grade]
+                    if value2 then
+                        if value2.canHire or value2.allowAll then
+                            OpenSheriffMenu()
+                        else
+                            Core.NotifyObjective(T.Error.OnlyPoliceopenmenu, 5000)
+                        end
+                    end
+                end
+            end
+        end, true) -- auto start on register
+
+        table.insert(prompts, prompt)
     end
 end
 
@@ -188,13 +180,21 @@ RegisterNetEvent("vorp_police:Client:JobUpdate", function()
         RegisterCommand(Config.Dragcommand, function()
             Core.NotifyObjective(T.Jobs.YouAreNotAPoliceOfficer, 5000)
         end, false)
-        isHandleRunning = false
+
+        for _, value in pairs(prompts) do
+            value:Destroy()
+        end
+
+        table.wipe(prompts)
         return
     end
 
-    if isHandleRunning then return end
+    -- already exists no need to register or start them
+    if #prompts > 0 then
+        return
+    end
 
-    CreateThread(Handle)
+    registerLocations()
     RegisterCommand(Config.Dragcommand, dragHandle, false)
 end)
 
@@ -206,10 +206,8 @@ CreateThread(function()
     local hasJob <const> = getPlayerJob()
     if not hasJob then return end
 
-    if not isHandleRunning then
-        CreateThread(Handle)
-        RegisterCommand(Config.Dragcommand, dragHandle, false)
-    end
+    RegisterCommand(Config.Dragcommand, dragHandle, false)
+    registerLocations()
 end)
 
 function OpenSheriffMenu()
@@ -218,12 +216,12 @@ function OpenSheriffMenu()
         {
             label = T.Menu.HirePlayer,
             value = "hire",
-            desc = T.Menu.HirePlayer .. "<br><br><br><br><br><br><br><br><br><br><br><br>"
+            desc = T.Menu.HirePlayer
         },
         {
             label = T.Menu.FirePlayer,
             value = "fire",
-            desc = T.Menu.FirePlayer .. "<br><br><br><br><br><br><br><br><br><br><br><br>"
+            desc = T.Menu.FirePlayer
         }
     }
 
@@ -232,8 +230,14 @@ function OpenSheriffMenu()
         subtext = T.Menu.HireFireMenu,
         align = Config.Align,
         elements = elements,
+        soundOpen = false,
+        hideRadar = true,
+        divider = true,
+        fixedHeight = true,
+        itemHeight = "4vh",
+        skipOpenEvent = false, -- detect open event
 
-    }, function(data, menu)
+    }, function(data, _)
         if data.current.value == "hire" then
             OpenHireMenu()
         elseif data.current.value == "fire" then
@@ -258,16 +262,23 @@ function OpenSheriffMenu()
                 TriggerServerEvent("vorp_police:server:firePlayer", res)
             end
         end
-    end, function(data, menu)
-        menu.close()
+    end, function(_, menu)
+        menu.close(true, true)
     end)
 end
 
 function OpenHireMenu()
     MenuData.CloseAll()
-    local elements = {}
-    for key, _ in pairs(Config.PoliceJobs) do
-        table.insert(elements, { label = T.Jobs.Job .. ": " .. key, value = key, desc = T.Jobs.Job .. key })
+    local elements <const> = {}
+    for job, value in pairs(Config.PoliceJobs) do
+        for grade, v in pairs(value) do
+            table.insert(elements, {
+                label = T.Jobs.Job .. ": " .. v.label .. " " .. grade,
+                value = job,
+                data = { grade = grade, label = v.label },
+                desc = T.Jobs.Job .. ": Hire " .. v.label .. " " .. grade
+            })
+        end
     end
 
     MenuData.Open("default", GetCurrentResourceName(), "OpenHireFireMenu", {
@@ -275,15 +286,21 @@ function OpenHireMenu()
         subtext = T.Menu.SubMenu,
         elements = elements,
         align = Config.Align,
-        lastmenu = "OpenSheriffMenu"
+        lastmenu = "OpenSheriffMenu",
+        soundOpen = false,
+        hideRadar = true,
+        divider = true,
+        fixedHeight = true,
+        itemHeight = "4vh",
+        skipOpenEvent = false, -- detect open event
 
     }, function(data, menu)
         if (data.current == "backup") then
             return _G[data.trigger]()
         end
 
-        menu.close()
-        local MyInput = {
+        menu.close(true, true, true)
+        local MyInput <const> = {
             type = "enableinput",
             inputType = "input",
             button = T.Player.Confirm,
@@ -301,16 +318,16 @@ function OpenHireMenu()
         local res = exports.vorp_inputs:advancedInput(MyInput)
         res = tonumber(res)
         if res and res > 0 then
-            TriggerServerEvent("vorp_police:server:hirePlayer", res, data.current.value)
+            TriggerServerEvent("vorp_police:server:hirePlayer", res, { job = data.current.value, grade = data.current.data.grade, label = data.current.data.label })
         end
-    end, function(data, menu)
-        menu.close()
+    end, function(_, menu)
+        menu.close(true, true)
     end)
 end
 
-function OpenTeleportMenu(location)
+function OpenTeleportMenu(location, soundOpen)
     MenuData.CloseAll()
-    local elements = {}
+    local elements <const> = {}
     for key, value in pairs(Config.Teleports) do
         if location then
             if location ~= key then
@@ -334,9 +351,15 @@ function OpenTeleportMenu(location)
         subtext = T.Menu.SubMenu,
         align = Config.Align,
         elements = elements,
+        itemHeight = "4vh",
+        fixedHeight = true,
+        soundOpen = soundOpen,
+        hideRadar = true,
+        divider = true,
+        skipOpenEvent = false, -- detect open event
 
     }, function(data, menu)
-        menu.close()
+        menu.close(true, true, true)
         local coords <const> = Config.Teleports[data.current.value].Coords
         DoScreenFadeOut(1000)
         repeat Wait(0) until IsScreenFadedOut()
@@ -348,8 +371,8 @@ function OpenTeleportMenu(location)
         Wait(4000)
         DoScreenFadeIn(1000)
         repeat Wait(0) until IsScreenFadedIn()
-    end, function(data, menu)
-        menu.close()
+    end, function(_, menu)
+        menu.close(true, true)
     end)
 end
 
@@ -358,19 +381,22 @@ local function OpenPoliceMenu()
     local isONduty <const> = LocalPlayer.state.isPoliceDuty
     local label <const> = isONduty and T.Duty.OffDuty or T.Duty.OnDuty
     local desc <const> = isONduty and T.Duty.GoOffDuty or T.Duty.GoOnDuty
+    local text = isONduty and "go offduty" or "go onduty"
     local elements <const> = {
         {
-            label = label,
+            label = label .. "<br><span style='opacity:0.6;'>" .. text .. "</span>",
             value = "duty",
-            desc = desc .. "<br><br><br><br><br><br><br><br><br><br><br><br>"
+            desc = desc,
+            footerText = "press enter",
         }
     }
 
     if Config.UseTeleportsMenu then
         table.insert(elements, {
-            label = T.Teleport.TeleportTo,
+            label = T.Teleport.TeleportTo .. " <br><span style='opacity:0.6;'>" .. "teleport options" .. "</span>",
             value = "teleports",
-            desc = T.Teleport.TeleportToDifferentLocations .. "<br><br><br><br><br><br><br><br><br><br><br><br>"
+            desc = T.Teleport.TeleportToDifferentLocations,
+            footerText = "press enter",
         })
     end
 
@@ -379,10 +405,16 @@ local function OpenPoliceMenu()
         subtext = T.Menu.SubMenu,
         align = Config.Align,
         elements = elements,
+        soundOpen = true,
+        hideRadar = true,
+        divider = true,
+        fixedHeight = true,
+        itemHeight = "4vh",
+        skipOpenEvent = false, -- detect open event
 
     }, function(data, menu)
         if data.current.value == "teleports" then
-            OpenTeleportMenu()
+            OpenTeleportMenu(false, true)
         elseif data.current.value == "duty" then
             local result = Core.Callback.TriggerAwait("vorp_police:server:checkDuty")
             if result then
@@ -392,10 +424,10 @@ local function OpenPoliceMenu()
                 Core.NotifyObjective(T.Duty.YouAreNotOnDuty, 5000)
                 applyBadge(false)
             end
-            menu.close()
+            menu.close(true, true, true)
         end
-    end, function(data, menu)
-        menu.close()
+    end, function(_, menu)
+        menu.close(true, true)
     end)
 end
 
@@ -406,7 +438,7 @@ end)
 
 --* CUFF PLAYER
 RegisterNetEvent('vorp_police:Client:PlayerCuff', function(action)
-    local playerPed <const> = PlayerPedId()
+    local playerPed <const> = CACHE.Ped
     if action == "cuff" then
         CuffPed(playerPed)
         SetEnableHandcuffs(playerPed, true, false)
@@ -441,7 +473,7 @@ RegisterNetEvent("vorp_police:Client:dragPlayer", function(_source)
 end)
 
 --* ON PLAYER DEATH
-AddEventHandler("vorp_core:Client:OnPlayerDeath", function(killerserverid, causeofdeath)
+AddEventHandler("vorp_core:Client:OnPlayerDeath", function()
     if drag then
         drag = false
         wasDragged = true
@@ -457,11 +489,11 @@ CreateThread(function()
         if drag then
             wasDragged = true
             local entity2 = GetPlayerPed(GetPlayerFromServerId(draggedBy))
-            AttachEntityToEntity(PlayerPedId(), entity2, 4103, 11816, 0.48, 0.00, 0.0, 0.0, 0.0, false, false, false, false, 2, false, true, false)
+            AttachEntityToEntity(CACHE.Ped, entity2, 4103, 11816, 0.48, 0.00, 0.0, 0.0, 0.0, false, false, false, false, 2, false, true, false)
         else
             if wasDragged then
                 wasDragged = false
-                DetachEntity(PlayerPedId(), true, false)
+                DetachEntity(CACHE.Ped, true, false)
             end
         end
         Wait(sleep)
@@ -477,24 +509,34 @@ RegisterNetEvent("vorp_police:Client:AlertPolice", function(targetCoords)
     BlipAddModifier(blip, Config.AlertBlips.Color)
     SetBlipName(blip, Config.AlertBlips.Name)
 
+    blip = Blips:Create('coords', {
+        Pos = targetCoords,
+        Blip = Config.AlertBlips.Style,
+        Options = {
+            sprite = Config.AlertBlips.Sprite,
+            name = T.Alerts.playeralert,
+            modifier = Config.AlertBlips.Color,
+        },
+    })
+
     StartGpsMultiRoute(joaat(Config.AlertBlips.Color), true, true)
     AddPointToGpsMultiRoute(targetCoords.x, targetCoords.y, targetCoords.z, false)
     SetGpsMultiRouteRender(true)
 
-    repeat Wait(1000) until #(GetEntityCoords(PlayerPedId()) - targetCoords) < 15.0 or blip == 0
+    repeat Wait(1000) until #(GetEntityCoords(CACHE.Ped) - targetCoords) < 15.0 or blip == 0
 
     if blip ~= 0 then
         Core.NotifyObjective(T.Alerts.arive, 5000)
+        blip:Remove()
+        blip = 0
     end
-    RemoveBlip(blip)
-    blip = 0
     ClearGpsMultiRoute()
 end)
 
 --* REMOVE BLIP FROM ALERT
 RegisterNetEvent("vorp_police:Client:RemoveBlip", function()
     if blip == 0 then return end
-    RemoveBlip(blip)
+    blip:Remove()
     blip = 0
     ClearGpsMultiRoute()
 end)
@@ -503,7 +545,7 @@ end)
 RegisterNetEvent("vorp_police:Client:JailFinished", function()
     playerInJail = false
     if Poly then
-        Poly:destroy()
+        PolyZones:Destroy(Poly)
         Poly = nil
     end
 
@@ -512,8 +554,8 @@ RegisterNetEvent("vorp_police:Client:JailFinished", function()
 
     local spawnCoords <const> = Config.jail.FreedSpawnCoords
     RequestCollisionAtCoord(spawnCoords.x, spawnCoords.y, spawnCoords.z)
-    SetEntityCoordsAndHeading(PlayerPedId(), spawnCoords.x, spawnCoords.y, spawnCoords.z, Config.jail.FreedSpawnHeading, false, false, false)
-    repeat Wait(0) until HasCollisionLoadedAroundEntity(PlayerPedId()) == 1
+    SetEntityCoordsAndHeading(CACHE.Ped, spawnCoords.x, spawnCoords.y, spawnCoords.z, Config.jail.FreedSpawnHeading, false, false, false)
+    repeat Wait(0) until HasCollisionLoadedAroundEntity(CACHE.Ped) == 1
     Wait(4000)
 
     DoScreenFadeIn(1000)
@@ -535,24 +577,36 @@ RegisterNetEvent("vorp_police:Client:JailPlayer", function()
 
     local spawnCoords <const> = Config.jail.JailSpawnCoords
     RequestCollisionAtCoord(spawnCoords.x, spawnCoords.y, spawnCoords.z)
-    SetEntityCoordsAndHeading(PlayerPedId(), spawnCoords.x, spawnCoords.y, spawnCoords.z, Config.jail.JailSpawnHeading, false, false, false)
-    repeat Wait(0) until HasCollisionLoadedAroundEntity(PlayerPedId()) == 1
+    SetEntityCoordsAndHeading(CACHE.Ped, spawnCoords.x, spawnCoords.y, spawnCoords.z, Config.jail.JailSpawnHeading, false, false, false)
+    repeat Wait(0) until HasCollisionLoadedAroundEntity(CACHE.Ped) == 1
     Wait(4000)
     DoScreenFadeIn(1000)
     repeat Wait(0) until IsScreenFadedIn()
 
     local centerCoords <const> = Config.jail.JailCenterCoords
     local radius <const> = Config.jail.JailRadius
-    Poly = CircleZone:Create(centerCoords, radius, { name = "prison" })
-    if not Poly then return end
-
-    Poly:onPlayerInOut(function(isPointInside, point)
-        if not isPointInside then
+    Poly = PolyZones:Register({
+        id = "vorp_police_jail",
+        type = "circle",
+        center = centerCoords,
+        radius = radius,
+        padding = 0.0,
+        onExit = function()
             Core.NotifyObjective(T.Jail.cantLeaveJail, 5000)
             Wait(3000)
-            SetEntityCoordsAndHeading(PlayerPedId(), Config.jail.JailSpawnCoords.x, Config.jail.JailSpawnCoords.y, Config.jail.JailSpawnCoords.z, Config.jail.JailSpawnHeading, false, false, false)
-        end
-    end)
+            SetEntityCoordsAndHeading(
+                CACHE.Ped,
+                Config.jail.JailSpawnCoords.x,
+                Config.jail.JailSpawnCoords.y,
+                Config.jail.JailSpawnCoords.z,
+                Config.jail.JailSpawnHeading,
+                false,
+                false,
+                false
+            )
+        end,
+    }, true)
+    if not Poly then return end
 
     if not playerInJail then
         playerInJail = true

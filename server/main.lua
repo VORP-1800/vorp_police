@@ -1,9 +1,15 @@
-local Core          = exports.vorp_core:GetCore()
-local Inv           = exports.vorp_inventory
-local T             = Translation.Langs[Config.Lang]
-local PlayersAlerts = {}
-local JobsToAlert   = {}
-local JailTime      = {}
+local LIB                 = Import({ "/configs/config", "/languages/translation", "/configs/logs" })
+local Config <const>      = LIB.Config --[[@as vorp_police_config]]
+local Translation <const> = LIB.Translation --[[@as vorp_police_translation]]
+local Logs <const>        = LIB.Logs
+
+local Core                = exports.vorp_core:GetCore()
+local Inv                 = exports.vorp_inventory
+local T                   = Translation.Langs[Config.Lang]
+local PlayersAlerts       = {}
+local JobsToAlert         = {}
+local JailTime            = {}
+local DutyList            = {}
 
 --* HELPER FUNCTIONS
 local function registerStorage(prefix, name, limit)
@@ -27,13 +33,14 @@ local function registerStorage(prefix, name, limit)
     end
 end
 
+---@return { [number]: { label: string, allowAll: boolean?, canHire: boolean?, canJail: boolean? } }?
 local function hasJob(user)
     local Character <const> = user.getUsedCharacter
     return Config.PoliceJobs[Character.job]
 end
 
 local function isOnDuty(source)
-    return Player(source).state.isPoliceDuty
+    return DutyList[source]
 end
 
 local function isPlayerNear(source, target)
@@ -110,18 +117,30 @@ end)
 
 
 --* HIRE PLAYER
-RegisterNetEvent("vorp_police:server:hirePlayer", function(id, job)
+RegisterNetEvent("vorp_police:server:hirePlayer", function(id, data)
     local _source <const> = source
 
     local user <const> = Core.getUser(_source)
     if not user then return end
 
-    if not hasJob(user) then
+    local value <const> = hasJob(user)
+    if not value then
         return Core.NotifyObjective(_source, T.Jobs.YouAreNotAPoliceOfficer, 5000)
     end
 
-    local label <const> = Config.JobLabels[job]
-    if not label then return print(T.Jobs.Nojoblabel) end
+    local value2 <const> = value[user.getUsedCharacter.jobGrade]
+    if not value2 then
+        return Core.NotifyObjective(_source, T.Jobs.NoJobPermission, 5000)
+    end
+
+    if not value2.canHire and not value2.allowAll then
+        return Core.NotifyObjective(_source, " not allowed to hire players", 5000)
+    end
+
+    local job = data.job
+    local label = data.label
+    local grade = data.grade
+
 
     local target <const> = id
     local targetUser <const> = Core.getUser(target)
@@ -138,6 +157,7 @@ RegisterNetEvent("vorp_police:server:hirePlayer", function(id, job)
     end
 
     targetCharacter.setJob(job, true)
+    targetCharacter.setJobGrade(grade, true)
     targetCharacter.setJobLabel(label, true)
 
     Core.NotifyObjective(target, T.Player.HireedPlayer .. label, 5000)
@@ -169,12 +189,22 @@ RegisterNetEvent("vorp_police:server:firePlayer", function(id)
         return Core.NotifyObjective(_source, T.Jobs.YouAreNotAPoliceOfficer, 5000)
     end
 
+    local value <const> = Config.PoliceJobs[user.getUsedCharacter.job]
+    if not value[user.getUsedCharacter.jobGrade] then
+        return Core.NotifyObjective(_source, " not allowed to fire players", 5000)
+    end
+
+    if not value[user.getUsedCharacter.jobGrade].canHire and not value[user.getUsedCharacter.jobGrade].allowAll then
+        return Core.NotifyObjective(_source, " not allowed to fire players", 5000)
+    end
+
     local target <const> = id
     local targetUser <const> = Core.getUser(target)
     if not targetUser then return Core.NotifyObjective(_source, T.Player.NoPlayerFound, 5000) end
 
     local targetCharacter <const> = targetUser.getUsedCharacter
     local targetJob <const> = targetCharacter.job
+
     if not Config.PoliceJobs[targetJob] then
         return Core.NotifyObjective(_source, T.Player.CantFirenotHired, 5000)
     end
@@ -187,6 +217,7 @@ RegisterNetEvent("vorp_police:server:firePlayer", function(id)
 
     if isOnDuty(target) then
         Player(target).state:set('isPoliceDuty', nil, true)
+        DutyList[target] = nil
     end
 
     TriggerClientEvent("vorp_police:Client:JobUpdate", target)
@@ -214,8 +245,27 @@ RegisterServerEvent('vorp_police:Server:dragPlayer', function(target)
     end
 end)
 
+
 --* REGISTER ITEMS
 CreateThread(function()
+    if Core.RegisterJobs then
+        local jobsData <const> = {}
+        for job, value in pairs(Config.PoliceJobs) do
+            jobsData[job] = {}
+            -- only if grades are used
+            jobsData[job].grades = {}
+            for grade, v in pairs(value) do
+                jobsData[job].grades[grade] = {}
+                jobsData[job].grades[grade].label = v.label
+            end
+        end
+        Core.RegisterJobs(jobsData, GetCurrentResourceName())
+    else
+        -- wait for some time to print this
+        -- print("^1vorp_police: server: RegisterJobs not found update vorp core to the latest version^7")
+    end
+
+
     if not Config.CuffItem or not Config.KeysItem then return end
 
     Inv:registerUsableItem(Config.CuffItem, function(data)
@@ -241,7 +291,10 @@ CreateThread(function()
         end
         if not result[2] or result[2] == 0 then return end
 
-        Inv:subItemById(_source, data.item.id)
+        if Config.CuffDelete then
+            Inv:subItemById(_source, data.item.id)
+        end
+
         TriggerClientEvent("vorp_police:Client:PlayerCuff", result[2], "cuff")
     end, GetCurrentResourceName())
 
@@ -260,7 +313,9 @@ CreateThread(function()
 
         local hasCuffs <const> = Inv:getItemById(_source, data.item.id)
         if not hasCuffs then
-            Inv:addItem(_source, Config.CuffItem, 1)
+            if Config.CuffDelete then
+                Inv:addItem(_source, Config.CuffItem, 1)
+            end
         end
 
         TriggerClientEvent("vorp_police:Client:PlayerCuff", result[2], "uncuff")
@@ -285,6 +340,7 @@ Core.Callback.Register("vorp_police:server:checkDuty", function(source, CB, _)
 
     if not isOnDuty(source) then
         Player(source).state:set('isPoliceDuty', true, true)
+        DutyList[source] = true
         JobsToAlert[source] = true
 
         description = description .. "**" .. Logs.Lang.JobOnDuty .. "**"
@@ -294,6 +350,7 @@ Core.Callback.Register("vorp_police:server:checkDuty", function(source, CB, _)
     else
         JobsToAlert[source] = nil
         Player(source).state:set('isPoliceDuty', nil, true)
+        DutyList[source] = nil
         description = description .. "**" .. Logs.Lang.JobOffDuty .. "**"
         Core.AddWebhook(Logs.Lang.JobOffDuty, Logs.DutyWebhook, description, Logs.color, Logs.Namelogs, Logs.logo, Logs.footerlogo, Logs.Avatar)
 
@@ -320,10 +377,7 @@ local function isPoliceOnCall(source)
 end
 
 local function getPoliceFromCall(source)
-    if PlayersAlerts[source] then
-        return PlayersAlerts[source]
-    end
-    return 0
+    return PlayersAlerts[source] or 0
 end
 
 local function getPlayerFromCall(source)
@@ -444,8 +498,13 @@ local function doesOfficerHaveJailPermission(source)
     local character <const> = Core.getUser(source).getUsedCharacter
     local job <const> = character.job
     local grade <const> = character.jobGrade
-    print(job, grade, Config.JobsAllowedToJail[job])
-    if not Config.JobsAllowedToJail[job] or grade < Config.JobsAllowedToJail[job] then
+    local value <const> = Config.PoliceJobs[job]
+    if not value then return false end
+
+    local value2 <const> = value[grade]
+    if not value2 then return false end
+
+    if not value2.canJail and not value2.allowAll then
         return false
     end
 
@@ -611,27 +670,28 @@ end)
 --* ON CHARACTER SELECT
 AddEventHandler("vorp:SelectedCharacter", function(source, char)
     if Config.DevMode then return end
-
-    if Config.PoliceJobs[char.job] then
+    local value = Config.PoliceJobs[char.job]
+    if value then
         TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.PoliceMenuCommand, T.Menu.OpenPoliceMenu, {})
 
-        TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.jail.Commands.Jail, T.Jail.jailSuggestions.jailPlayerCommand, {
-            { name = T.Jail.jailSuggestions.Help.jailPlayer.name, help = T.Jail.jailSuggestions.Help.jailPlayer.help },
-            { name = "MINUTES",                                   help = T.Jail.jailSuggestions.Help.jailPlayer.Minites.help }
-        })
+        if value[char.jobGrade] and value[char.jobGrade].canJail then
+            TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.jail.Commands.Jail, T.Jail.jailSuggestions.jailPlayerCommand, {
+                { name = T.Jail.jailSuggestions.Help.jailPlayer.name, help = T.Jail.jailSuggestions.Help.jailPlayer.help },
+                { name = "MINUTES",                                   help = T.Jail.jailSuggestions.Help.jailPlayer.Minites.help }
+            })
 
-        TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.jail.Commands.Unjail, T.Jail.jailSuggestions.unjailPlayerCommand, {
-            { name = T.Jail.jailSuggestions.Help.unjailPlayer.name, help = T.Jail.jailSuggestions.Help.unjailPlayer.help }
-        })
+            TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.jail.Commands.Unjail, T.Jail.jailSuggestions.unjailPlayerCommand, {
+                { name = T.Jail.jailSuggestions.Help.unjailPlayer.name, help = T.Jail.jailSuggestions.Help.unjailPlayer.help }
+            })
 
-        TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.jail.Commands.ChangeJailTime, T.Jail.jailSuggestions.changeJailTimeCommand, {
-            { name = T.Jail.jailSuggestions.Help.jailPlayer.name, help = T.Jail.jailSuggestions.Help.jailPlayer.help },
-            { name = "MINUTES",                                   help = T.Jail.jailSuggestions.Help.jailPlayer.Minites.help }
-        })
+            TriggerClientEvent("chat:addSuggestion", source, "/" .. Config.jail.Commands.ChangeJailTime, T.Jail.jailSuggestions.changeJailTimeCommand, {
+                { name = T.Jail.jailSuggestions.Help.jailPlayer.name, help = T.Jail.jailSuggestions.Help.jailPlayer.help },
+                { name = "MINUTES",                                   help = T.Jail.jailSuggestions.Help.jailPlayer.Minites.help }
+            })
+        end
     end
 
     local data <const> = GetResourceKvpString(("vorp_police_jailTime_data_%s"):format(char.charIdentifier))
-    print(data, "OnSelect", char.charIdentifier)
     if not data then return end
 
     local jailData <const> = json.decode(data)
@@ -640,7 +700,7 @@ AddEventHandler("vorp:SelectedCharacter", function(source, char)
         JailTime[source] = nil
         return
     end
-    print("send to jail")
+
     SetTimeout(10000, function()
         local currentTime <const> = os.time()
         local jailEnd <const> = currentTime + (jailData.jailEnd * 60)
@@ -750,3 +810,7 @@ RegisterNetEvent("vorp_core:Server:OnPlayerDeath", function()
         end)
     end
 end)
+
+
+exports("isOnDuty", isOnDuty)
+exports("getPoliceFromCall", getPoliceFromCall)
